@@ -1,0 +1,477 @@
+sort Contributions by Name and sum them.
+
+SQL made two functions
+USE [ParishGiving2013]
+GO
+/****** Object:  UserDefinedFunction [dbo].[fnc_QueensRptMemContSum]    Script Date: 07/07/2014 16:29:37 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER FUNCTION [dbo].[fnc_QueensRptMemContSum]
+(
+	@MemberContributionID int,
+	@YearCummulative bit
+)
+RETURNS DECIMAL(18,2)
+AS
+BEGIN
+	-- Declare the return variable here
+	DECLARE @Qtr1Date DateTime, @Qtr2Date DateTime, @Qtr3Date DateTime, @Qtr4Date DateTime, @rval decimal(18,2)
+	
+	SELECT @rval =  SUM(isnull(Amount,0))
+	FROM dbo.tbl_Transactions AS t 
+	
+
+	WHERE (t.Response = 'A01' or t.Response = 'PEND') 
+	AND (t.MemberContributionID = @MemberContributionID) 
+	AND (t.TransactionDate >= '2014-01-01' AND t.TransactionDate <= '2014-06-30')
+
+return @rval
+END
+And
+USE [P2013]
+GO
+/****** Object:  UserDefinedFunction [dbo].[fnc_QueensAdd]    Script Date: 07/07/2014 16:30:17 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER FUNCTION [dbo].[fnc_QueensAdd] 
+(
+	@ContributionTypeID int
+)
+RETURNS Decimal (18,2)
+AS
+BEGIN
+	-- Declare the return variable here
+	DECLARE @ResultVar DECIMAL (18,2)
+
+	-- Add the T-SQL statements to compute the return value here
+	SELECT @ResultVar = SUM(dbo.fnc_QueensRptMemContSum(MemberContributionID, 0))
+	FROM         dbo.tbl_MemberContributions AS mc
+	GROUP BY ContributionTypeID
+	HAVING (ContributionTypeID = @ContributionTypeID)
+	
+
+return @ResultVar
+END
+
+---------------------------------------------------------------------------------------
+#######################################################
+
+
+
+Calling Queens Add from a view to match the AutoReport process.
+better solution may be to use Sub-Query in Stored Procedure.
+USE [P2013]
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE PROCEDURE  dbo.sp_ContributionsSumDateRange
+	-- Add the parameters for the stored procedure here
+	@BeginDate datetime = '2014-01-01',
+	@EndDate datetime = '2015-01-01',
+	@OrgID int = 0
+AS
+BEGIN
+	
+	SET NOCOUNT ON;
+
+SELECT tamts.Amounts, tamts.ContributionTypeID, tbl_ContributionTypes.ContributionName,   
+             tbl_ContributionTypes.OrganizationID, tbl_ContributionTypes.Status
+FROM  (SELECT SUM(tbl_Transactions.Amount) AS Amounts, tbl_MemberContributions.ContributionTypeID
+             FROM   tbl_Transactions INNER JOIN
+              tbl_MemberContributions ON tbl_Transactions.MemberContributionID =   
+              tbl_MemberContributions.MemberContributionID
+              WHERE (tbl_Transactions.TransactionDate >= CONVERT(DATETIME, @BeginDate, 102)) AND  
+             (tbl_Transactions.Response = 'A01') AND 
+             (tbl_Transactions.TransactionDate < CONVERT(DATETIME, @EndDate, 102))
+              GROUP BY tbl_MemberContributions.ContributionTypeID) AS tamts RIGHT OUTER JOIN
+               tbl_ContributionTypes ON tamts.ContributionTypeID = tbl_ContributionTypes.ContributionTypeID
+WHERE (tbl_ContributionTypes.OrganizationID = @OrgID)
+END
+GO
+
+Then use another Stored Procedure to decide the date and orgs sent in, and return our results
+USE [P2013]
+GO
+/****** Object:  StoredProcedure [dbo].[asp_QueensofPeaceContSumQtrCumulative]    Script Date: 07/15/2014 15:44:22 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+
+ALTER PROCEDURE  [dbo].[asp_QueensofPeaceContSumQtrCumulative]
+	@QtrCumulative bit
+	
+AS
+BEGIN
+	DECLARE @CurrDate DATE = GETDATE(), @Year int, @Yearstr nvarchar(200), @Qtr1 nvarchar(200) = '-03-31',
+		@Qtr2 nvarchar(200) = '-06-30', @Qtr3 nvarchar(200) = '-09-30', @Qtr4 nvarchar(200) = '-12-31', @StartDate date,
+		@StopDate date, @LastQtrStart date
+	
+	SET NOCOUNT ON;
+	
+	SET @Year = YEAR(@CurrDate);
+	SET @Yearstr = CONVERT(nvarchar(200), @Year);
+	SET @StartDate = CONVERT(date, @Yearstr + '-01-01');
+		
+	IF (@CurrDate >= CONVERT(date, @StartDate) and @CurrDate < CONVERT(date, @Yearstr + @Qtr1))
+		BEGIN
+			SET @Year = @Year - 1		
+			SET @Yearstr = CONVERT(nvarchar(200), @Year)
+			SET @StartDate = CONVERT(date, @Yearstr + '-01-01')
+			SET @StopDate = CONVERT(date, @Yearstr + @Qtr4)
+			SET @LastQtrStart = CONVERT(date, @Yearstr + @Qtr3)
+		END
+
+	IF (@CurrDate >= CONVERT(date, @StartDate) and @CurrDate < CONVERT(date, @Yearstr + @Qtr2))
+		SET @StopDate = CONVERT(date, @Yearstr + @Qtr1);
+		
+	
+	IF (@CurrDate >= CONVERT(date, @StartDate) and @CurrDate < CONVERT(date, @Yearstr + @Qtr3))
+		BEGIN
+			SET @StopDate = CONVERT(date, @Yearstr + @Qtr2);
+			SET @LastQtrStart = CONVERT(date, @Yearstr + @Qtr1);
+		END
+	
+	IF (@CurrDate >= CONVERT(date, @StartDate) and @CurrDate < CONVERT(date, @Yearstr + @Qtr4))
+		BEGIN
+			SET @StopDate = CONVERT(date, @Yearstr + @Qtr3);
+			SET @LastQtrStart = CONVERT(date, @Yearstr + @Qtr2);
+		END
+	
+	IF (@QtrCumulative = 0)
+		SET @StartDate = @LastQtrStart;
+	
+	Declare @spresults TABLE(Amounts decimal(18,2), ContributionTypeID int, ContributionName nvarchar(200), OrganizationID int, Status bit)
+	
+	INSERT INTO @spresults
+	EXEC asp_ContributionsSumDateRange @BeginDate = @StartDate, @EndDate = @StopDate, @OrgID = 505
+
+	Select *
+	From @spresults
+	WHERE Amounts IS NOT NUll
+END
+
+---------------------------------------------------------------------------------------
+#######################################################
+
+
+
+Next Solution
+---------------------------------------------------------------------------------------
+######################################################
+
+Need to get a count on a group? Then use ROW_NUMBER()
+
+SELECT StoreID,  storeName, Row_Number() over(partition by StoreID ORDER BY storeName)
+FROM Stores
+
+---------------------------------------------------------------------------------------
+######################################################
+
+
+
+
+Next Solution
+---------------------------------------------------------------------------------------
+######################################################
+Need to get a list by excluding people from another list.
+
+SELECT 	m.FirstName, m.LastName, mc.ContributionAmount,
+FROM     	dbo.tbl_Members AS m INNER JOIN
+                  	dbo.tbl_MemberContributions AS mc ON m.MemberID = mc.MemberID
+WHERE 	(mc.MemberID NOT IN
+                      	(SELECT 	MemberID
+                        	FROM      	dbo.tbl_MemberContributions AS mc2
+                        	WHERE  	(ContributionTypeID = 9996) AND (Status = 1))) AND (mc.ContributionTypeID = 9860) AND
+(mc.Status = 1)
+---------------------------------------------------------------------------------------
+######################################################
+
+
+
+
+Next Solution
+---------------------------------------------------------------------------------------
+######################################################
+
+Trying to get one value out of multiple conditions.
+
+Ex. if this and if that,  than this,  and if those than these.
+
+Use a function with an embedded CASE statement.
+
+ALTER FUNCTION [dbo].[fnc_BuildTAFilter]
+(
+	@ServerGroup nvarchar(50),
+	@EmpID int,
+	@RepID int
+)
+RETURNS nvarchar(50)
+AS
+BEGIN
+	declare @ReturnVal nvarchar(50), @Q5 nvarchar(50), @Q8 nvarchar(50)
+
+
+SELECT @Q5 = md.Q5Value, @Q8 = md.Q8Value
+ FROM HIVData.dbo.tbl_MedicalInsightsData md
+ WHERE MIRepID = @RepID AND EmpID = @EmpID;
+			
+			
+SET @ReturnVal = CASE
+ WHEN (@Q8 = '72' OR @Q8 = '114' OR @Q5 Like '120%' OR @Q5 Like '%,120%' OR @Q5 Like '61%'  OR @Q5 Like '%,61%' OR @Q5 Like '42%' OR @Q5 Like '%,42%' OR @Q5 Like '55%' OR @Q5 Like '%,55%' OR @Q5V Like '77%' OR @Q5 Like '%,77%')
+	THEN
+CASE @Q2 = ‘78’
+ THEN 'VR-HEOR-HBV'
+ELSE ‘VR-HEOR’			
+	Else 'VR'
+	END
+				
+					
+				
+			
+RETURN @ReturnVal
+
+----------------------------------------------------------------------------------------------------
+#############################################################
+
+
+
+
+Next Solution
+---------------------------------------------------------------------------------------
+######################################################
+Trying to send an email from SQL
+
+ALTER PROCEDURE [dbo].[sp_SMTPemail]
+(
+@From as nvarchar(50),
+@To as nvarchar(50),
+@Subject as nvarchar(255),
+@Body as text,
+@Bcc as nvarchar(50) = null
+)
+AS
+-- Declare
+DECLARE @message int
+DECLARE @config int
+DECLARE @hr int
+DECLARE @src varchar(255), @desc varchar(255)
+EXEC @hr = sp_OACreate 'CDO.Message', @message OUT -- create the message object
+EXEC @hr = sp_OACreate 'CDO.Configuration', @config OUT -- create the configuration object
+-- Configuration Object
+EXEC @hr = sp_OASetProperty @config, 'Fields(cdoSendUsingMethod)', 'cdoSendUsingPort' -- Send the message using the network
+EXEC @hr = sp_OASetProperty @config, 'Fields(cdoSMTPServer)', '127.0.0.1' -- SMTP Server
+EXEC @hr = sp_OASetProperty @config, 'Fields(cdoSMTPServerPort)', 25 -- Server SMTP Port
+EXEC @hr = sp_OASetProperty @config, 'Fields(cdoSMTPAuthenticate)', 'cdoAnonymous' -- Anonymous SMTP Authenticate
+EXEC sp_OAMethod @config, 'Fields.Update'
+-- Message Object
+EXEC @hr = sp_OASetProperty @message, 'Configuration', @config -- set message.configuration = config
+EXEC @hr = sp_OASetProperty @message, 'To', @To
+EXEC @hr = sp_OASetProperty @message, 'From', @From
+EXEC @hr = sp_OASetProperty @message, 'Subject', @Subject
+EXEC @hr = sp_OASetProperty @message, 'TextBody', @Body
+if @Bcc <> null
+begin
+	EXEC @hr = sp_OASetProperty @message, 'Bcc', @Bcc
+end
+EXEC sp_OAMethod @message, 'Send()'
+-- Destroys the objects
+EXEC @hr = sp_OADestroy @message
+EXEC @hr = sp_OADestroy @config
+-- Errorhandler
+IF @hr <> 0
+BEGIN
+EXEC sp_OAGetErrorInfo @message, @src OUT, @desc OUT
+SELECT hr=convert(varbinary(4),@hr), Source=@src, Description=@desc
+RETURN
+END
+----------------------------------------------------------------------------------------------------
+#############################################################
+
+
+
+
+Next Solution
+---------------------------------------------------------------------------------------
+######################################################
+Trying to see if and when a value changes in a table then it sends and email.
+
+ALTER PROCEDURE [dbo].[sp_CurriculumReviewCheck]
+	--@C_Id nvarchar(20)
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	DECLARE @Date as Date, @emailaddress nvarchar(200), @subject nvarchar(200), @message nvarchar(2000), @IDList nvarchar(100)
+	DECLARE @TempTbl TABLE(id nvarchar(20), rvwStatus int)
+	set @Date = CONVERT(date, getdate())
+	
+	
+	SET NOCOUNT ON;
+-- Add any new curriculum to the review check table
+	INSERT into tbl_CurricReviewCheck (CurricID, ReviewStatus)
+		(SELECT ID, ReviewStatus FROM tbl_Curriculum
+		where ID NOT IN(SELECT CurricID FROM tbl_CurricReviewCheck))
+	
+	
+	-- Check the review status field to see if any changes
+	-- and then add them to a temp table
+	INSERT into @TempTbl (id, rvwStatus)
+		(SELECT ID, ReviewStatus FROM tbl_Curriculum WHERE ReviewStatus = 3
+		 EXCEPT
+		 SELECT CurricID, ReviewStatus FROM tbl_CurricReviewCheck WHERE ReviewStatus = 3)
+	
+	
+	If((SELECT COUNT(*) From @TempTbl) > 0 )
+	BEGIN
+		-- Update the review check table with new values
+		Update c SET ReviewStatus = tmp.rvwStatus, ChangedDate = @Date
+			FROM tbl_CurricReviewCheck c
+				INNER JOIN @TempTbl tmp
+				ON c.CurricID = tmp.id
+		
+		SET @IDList = ''
+		SELECT @IDList += (id + ', ') FROM @TempTbl
+			
+		-- Send email if records were updated	
+		Set @emailaddress = 'alan.byrn@ectrain.com'
+		SET @subject = 'Curriculum review status change'
+		SET @message = 'Curiculum review status chaged to 3 for ' + @IDList + ' please take note!'	
+		
+		EXEC dbo.sp_SMTPemail 'CurriculumCheck@ectrain.com', @emailaddress, @subject, @message
+			
+			
+		
+		
+		
+	END
+	
+	Update tbl_CurricReviewCheck SET CheckedDate = @Date			
+				
+	
+END
+
+=====================================================================
+
+//
+// Change the Next Charge date for a batch of Billing that ran over time
+//  -First was to test and grab records,  second was the actual update.
+//
+
+
+SELECT    t.TransactionID, t.TransactionNumber, t.MemberContributionID, t.ContributionMethodID, t.TransactionDate, m.NextChargeDate, m.Ftype
+FROM         tbl_Transactions t inner JOIN tbl_MemberContributions m ON t.MemberContributionID = m.MemberContributionID
+WHERE     (TransactionNumber LIKE 'a%') AND (TransactionDate >= CONVERT(DATETIME, '2016-05-04 00:00:00', 102))
+
+------------------------------------------------------------------------------------------------------------------
+
+Update m
+SET  m.NextChargeDate = DATEADD(DAY, -1, m.NextChargeDate) 
+FROM         tbl_Transactions t inner JOIN tbl_MemberContributions m ON t.MemberContributionID = m.MemberContributionID
+WHERE     (t.TransactionNumber LIKE 'a%') AND (t.TransactionDate >= CONVERT(DATETIME, '2016-05-04 00:00:00', 102) AND m.FType <> 5)
+
+
+
+=====================================================================
+\\
+\\     People who donated to a certain contribution (Easter Flowers)
+\\
+
+
+SELECT     TOP (100) PERCENT dbo.tbl_Members.LastName + ',  ' + dbo.tbl_Members.FirstName AS Fullname, dbo.tbl_Members.Email, 
+                      dbo.tbl_ContributionTypes.ContributionName, dbo.tbl_MemberContributions.ContributionAmount, dbo.tbl_MemberContributions.NextChargeDate, 
+                      dbo.tbl_MemberContributions.MemberContributionID
+FROM         dbo.tbl_ContributionTypes INNER JOIN
+                      dbo.tbl_MemberContributions ON dbo.tbl_ContributionTypes.ContributionTypeID = dbo.tbl_MemberContributions.ContributionTypeID INNER JOIN
+                      dbo.tbl_Members ON dbo.tbl_MemberContributions.MemberID = dbo.tbl_Members.MemberID
+WHERE     (dbo.tbl_MemberContributions.OrganizationID = 415) AND (dbo.tbl_MemberContributions.ContributionTypeID = 50969) AND 
+                      (dbo.tbl_MemberContributions.NextChargeDate > CONVERT(DATETIME, '2016-02-28 00:00:00', 102))
+ORDER BY Fullname
+
+=====================================================================
+\\
+\\ Get the modules in a DB that reference an item
+\\  ie. Get all the stored procedures that reference a table or another DB.
+
+
+SELECT OBJECT_Name([object_id]),[definition]
+FROM sys.sql_modules
+WHERE definition like '%sp_Name%'
+GO
+
+=====================================================================
+\\
+\\ Sum of amounts and counts on transactions with a month for every church.
+\\
+
+SELECT OrganizationName, Month_, PaymentType, SUM(Amount) Total, COUNT(*) As Count
+
+FROM ( SELECT     o.OrganizationID, o.OrganizationName, t.TransactionDate, t.Amount, MONTH(t.TransactionDate) As MonNum, CASE WHEN MONTH(t .Transactiondate) = 1 THEN 'January' WHEN MONTH(t .Transactiondate) 
+                      = 2 THEN 'February' WHEN MONTH(t .Transactiondate) = 3 THEN 'March' ELSE 'WHAT' END AS Month_,
+                      CASE WHEN t .ContributionMethodID = 20 THEN 'Credit Card' WHEN t .ContributionMethodID = 21 THEN 'ACH' ELSE 'WHAT' END AS PaymentType
+FROM         tbl_Organizations AS o INNER JOIN
+                      tbl_MemberContributions AS mc ON o.OrganizationID = mc.OrganizationID INNER JOIN
+                      tbl_Transactions AS t ON mc.MemberContributionID = t.MemberContributionID
+WHERE     (t.TransactionDate > '01-01-2016') AND (t.TransactionDate < '04-01-2016')
+
+
+) sub
+GROUP BY OrganizationName, MonNum, Month_, PaymentType
+Order BY OrganizationName, MonNum, Month_, PaymentType
+
+=====================================================================
+\\
+\\ Trying to see if there are duplicate entries without an index field.
+\\
+
+	(COLLATE SQL_Latin1… is to make it case sensitive)
+
+SELECT t.* From (
+SELECT IndexText COLLATE SQL_Latin1_General_CP1_CS_AS As text, COUNT(*) AS DuplicatesCount
+	FROM tbl_Index
+	GROUP BY IndexText COLLATE SQL_Latin1_General_CP1_CS_AS
+	) t
+Where t.DuplicatesCount > 1
+
+=====================================================================
+\\
+\\ Trying to test for exact match of word in two different tables and send back a table variable
+\\
+alter PROCEDURE [dbo].[sp_CheckList_Get] (
+	@searchTerm nvarchar(1000) = ''
+)AS
+
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+	DECLARE @wordFoundtbl table (sourcelist nvarchar(50), wordText nvarchar(1000));
+	DECLARE @wordFound nvarchar(1000);
+	DECLARE @sourceList nvarchar(50);
+	
+	SET @wordFound = '';
+	SET @sourceList = 'IndexList';
+
+	Select  @wordFound = i.[IndexText]			
+		FROM [dbo].[tbl_Index] i		
+		WHERE i.IndexText = @searchTerm COLLATE QL_Latin1_General_CP1_CS_AS
+		ORDER BY IndexText;
+
+
+	IF @wordFound = '' 
+		SELECT @wordFound =	 s.[WordText], @sourceList = 'StopList'			
+			FROM [dbo].[tbl_StopWords] s		
+			WHERE s.WordText = @searchTerm COLLATE SQL_Latin1_General_CP1_CS_AS;
+			
+	INSERT INTO @wordFoundtbl (sourcelist, wordText) Values (@sourceList, @wordFound); 
+
+	SELECT * FROM @wordFoundtbl;
+END
