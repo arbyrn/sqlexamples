@@ -1,7 +1,7 @@
 sort Contributions by Name and sum them.
 
 SQL made two functions
-USE [ParishGiving2013]
+USE [P2013]
 GO
 /****** Object:  UserDefinedFunction [dbo].[fnc_QueensRptMemContSum]    Script Date: 07/07/2014 16:29:37 ******/
 SET ANSI_NULLS ON
@@ -100,7 +100,7 @@ GO
 Then use another Stored Procedure to decide the date and orgs sent in, and return our results
 USE [P2013]
 GO
-/****** Object:  StoredProcedure [dbo].[asp_QueensofPeaceContSumQtrCumulative]    Script Date: 07/15/2014 15:44:22 ******/
+/****** Object:  StoredProcedure [dbo].[asp_QueensContSumQtrCumulative]    Script Date: 07/15/2014 15:44:22 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
